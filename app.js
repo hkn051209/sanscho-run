@@ -1,19 +1,32 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/addons/GLTFLoader.js";
 
 /* ============ 設定 ============ */
 const LANE_X = [-1.3, 1.3];        // 左・右のレーン
 const RUN_SPEED = 9;               // プレイ中の進む速さ
-const MENU_SPEED = 2.5;            // メニュー中の背景の流れ
 const SPAWN_Z = -45;               // ゲートが現れる距離
 const REWARD_EVERY = 10;           // ランダムモードで何問正解でご褒美か
+const HIT_TIME = 1.0;              // 不正解で止まる秒数
 const DASH_CYCLE = 180;
+const HIT_Z = -1.1;               // 扉に当たる位置（キャラの少し手前）
 
+/* キャラクター（KayKit Adventurers / CC0）。服の色はテクスチャで子ども向けに塗り替え済み */
+const CHARS = {
+  boy:  { file: "assets/models/boy.glb",  tex: "assets/models/boy_texture.png" },
+  girl: { file: "assets/models/girl.glb", tex: "assets/models/girl_texture.png" },
+};
+// 体のパーツだけ表示（武器・帽子・マントは隠す）
+const KEEP_PART = /_(ArmLeft|ArmRight|Body|Head|LegLeft|LegRight)$/;
+
+/* ご褒美の小物。slot: head=頭の骨 / neck・back=胸の骨 に付く
+   増やす時は ITEMS に1行足して、buildItem() に形を足す（またはGLBを読み込む） */
 const ITEMS = [
   { id: "ribbon",   name: "リボン",     icon: "🎀", slot: "head" },
   { id: "hat",      name: "麦わら帽子", icon: "👒", slot: "head" },
   { id: "bunny",    name: "うさぎ耳",   icon: "🐰", slot: "head" },
+  { id: "cap",      name: "キャップ",   icon: "🧢", slot: "head" },
   { id: "scarf",    name: "マフラー",   icon: "🧣", slot: "neck" },
-  { id: "backpack", name: "リュック",   icon: "🎒", slot: "back" },
+  { id: "backpack", name: "ランドセル", icon: "🎒", slot: "back" },
 ];
 
 /* ============ 保存 ============ */
@@ -21,12 +34,15 @@ const load = (k, fb) => { try { return JSON.parse(localStorage.getItem(k)) ?? fb
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 const owned = new Set(load("sr-owned", []));
 const equipped = load("sr-equipped", {});   // slot -> item id
+let charKey = load("sr-char", "boy");
+if (!CHARS[charKey]) charKey = "boy";
 
 /* ============ 共通 ============ */
 const $ = (id) => document.getElementById(id);
 const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 const mat = (c) => new THREE.MeshLambertMaterial({ color: c });
 const lerp = (a, b, t) => a + (b - a) * t;
+const damp = (a, b, k, dt) => lerp(a, b, 1 - Math.exp(-k * dt));
 
 function disposeObj(o) {
   o.traverse((c) => {
@@ -51,17 +67,19 @@ scene.fog = new THREE.Fog(0x9fe0ff, 22, 80);
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
 camera.position.set(0, 3.2, 6.5);
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0x88aa66, 1.6));
-const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x88aa66, 1.7));
+const sun = new THREE.DirectionalLight(0xffffff, 1.3);
 sun.position.set(4, 10, 6);
 scene.add(sun);
 
-addEventListener("resize", () => {
+function onResize() {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
-  camera.fov = camera.aspect < 1 ? 80 : 60;
+  camera.fov = camera.aspect < 1 ? 75 : 60;
   camera.updateProjectionMatrix();
-});
+}
+addEventListener("resize", onResize);
+onResize();
 
 /* ============ 背景（道・草・木・雲） ============ */
 const grass = new THREE.Mesh(new THREE.PlaneGeometry(200, 400), mat(0x8fd16b));
@@ -125,98 +143,152 @@ for (let i = 0; i < 18; i++) { const t = makeTree(); placeDecor(t); scene.add(t)
 const clouds = [];
 for (let i = 0; i < 8; i++) { const c = makeCloud(); placeCloud(c, true); scene.add(c); clouds.push(c); }
 
-/* ============ 走る子ども（プレースホルダーの人型） ============
-   Mixamoのモデルを使う時は、このrunner部分をGLTFLoaderで読み込んだモデルに
-   差し替え、走りアニメーションをAnimationMixerで再生すればOK。 */
-const skin = 0xffd2a8, shirt = 0xff7a59, pants = 0x4a6fd8, shoeC = 0x6b4a3a, hairC = 0x4a2c1d;
+/* ============ キャラクター ============ */
+// runner: 左右移動と傾き / facing: 向き（プレイ中は後ろ姿、メニューでは正面） / その下にモデル
 const runner = new THREE.Group();
+const facing = new THREE.Group();
+runner.add(facing);
 scene.add(runner);
 
-const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.5, 6, 12), mat(shirt));
-body.position.y = 1.35;
-runner.add(body);
+const chars = {};       // key -> { scene, mixer, actions, head, chest, current }
+let cur = null;
 
-const headG = new THREE.Group();
-headG.position.y = 2.05;
-runner.add(headG);
-headG.add(new THREE.Mesh(new THREE.SphereGeometry(0.4, 24, 18), mat(skin)));
-const hairMesh = new THREE.Mesh(
-  new THREE.SphereGeometry(0.42, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.5),
-  mat(hairC)
-);
-hairMesh.position.y = 0.02;
-headG.add(hairMesh);
-
-function limb(x, y, color, len, r, withShoe) {
-  const p = new THREE.Group();
-  p.position.set(x, y, 0);
-  const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 4, 8), mat(color));
-  m.position.y = -(len / 2 + r);
-  p.add(m);
-  if (withShoe) {
-    const s = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.14, 0.36), mat(shoeC));
-    s.position.set(0, -(len + 2 * r) - 0.02, 0.08);
-    p.add(s);
+async function loadChar(key) {
+  const def = CHARS[key];
+  const [gltf, tex] = await Promise.all([
+    new GLTFLoader().loadAsync(def.file),
+    new THREE.TextureLoader().loadAsync(def.tex),
+  ]);
+  tex.flipY = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const root = gltf.scene;
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.frustumCulled = false;
+    o.visible = KEEP_PART.test(o.name);
+    if (o.visible) {
+      o.material = o.material.clone();
+      o.material.map = tex;
+    }
+  });
+  const mixer = new THREE.AnimationMixer(root);
+  const actions = {};
+  for (const name of ["Idle", "Running_A", "Hit_A", "Cheer"]) {
+    const clip = gltf.animations.find((a) => a.name === name);
+    if (clip) actions[name] = mixer.clipAction(clip);
   }
-  runner.add(p);
-  return p;
+  return {
+    scene: root, mixer, actions, current: null, currentName: null,
+    head: root.getObjectByName("head"),
+    chest: root.getObjectByName("chest"),
+  };
 }
-const armL = limb(-0.36, 1.7, shirt, 0.4, 0.1, false);
-const armR = limb(0.36, 1.7, shirt, 0.4, 0.1, false);
-const legL = limb(-0.16, 0.95, pants, 0.45, 0.13, true);
-const legR = limb(0.16, 0.95, pants, 0.45, 0.13, true);
 
-/* ---------- 小物（着せ替え） ---------- */
+function playAnim(name, { once = false, fade = 0.2 } = {}) {
+  if (!cur) return;
+  const a = cur.actions[name];
+  if (!a || (cur.currentName === name && !once)) return;
+  a.reset();
+  a.setLoop(once ? THREE.LoopOnce : THREE.LoopRepeat, Infinity);
+  a.clampWhenFinished = once;
+  a.play();
+  if (cur.current && cur.current !== a) cur.current.crossFadeTo(a, fade, false);
+  cur.current = a;
+  cur.currentName = name;
+}
+
+function setChar(key) {
+  if (!chars[key]) return;
+  // 小物を外してからモデルを入れ替え
+  for (const s of Object.keys(worn)) wear(s, null);
+  if (cur) facing.remove(cur.scene);
+  cur = chars[key];
+  facing.add(cur.scene);
+  charKey = key;
+  save("sr-char", key);
+  cur.current = null;
+  cur.currentName = null;
+  playAnim(animForState(), { fade: 0 });
+  applyEquip();
+  document.querySelectorAll("[data-char]").forEach((b) => b.classList.toggle("on", b.dataset.char === key));
+}
+
+/* ---------- 小物（着せ替え） ----------
+   座標は骨からの相対位置（前が +Z、上が +Y）。頭の骨は首の付け根あたりにあり、頭のてっぺんは +0.96 くらい */
 function buildItem(id) {
   const g = new THREE.Group();
   if (id === "ribbon") {
     const bow = new THREE.Group();
-    const wl = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 8), mat(0xff4f9a));
-    wl.scale.set(1.3, 0.9, 0.4);
-    wl.position.x = -0.16;
+    const wl = new THREE.Mesh(new THREE.SphereGeometry(0.2, 14, 10), mat(0xff4f9a));
+    wl.scale.set(1.3, 0.9, 0.45);
+    wl.position.x = -0.2;
     const wr = wl.clone();
-    wr.position.x = 0.16;
-    const knot = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), mat(0xffb3d9));
+    wr.position.x = 0.2;
+    const knot = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), mat(0xffb3d9));
     bow.add(wl, wr, knot);
-    bow.position.set(0.3, 0.36, -0.05);
-    bow.rotation.z = -0.4;
+    bow.position.set(0.36, 0.92, -0.05);
+    bow.rotation.z = -0.45;
     g.add(bow);
   }
   if (id === "hat") {
-    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 0.05, 28), mat(0xf3d27a));
-    brim.position.y = 0.3;
-    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.42, 0.3, 24), mat(0xf3d27a));
-    crown.position.y = 0.46;
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.43, 0.43, 0.07, 24), mat(0xff5a6e));
-    band.position.y = 0.36;
+    const straw = mat(0xf3d27a);
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.88, 0.88, 0.05, 32), straw);
+    brim.position.y = 0.8;
+    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.54, 0.36, 28), straw);
+    crown.position.y = 0.98;
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.09, 28), mat(0xff5a6e));
+    band.position.y = 0.86;
     g.add(brim, crown, band);
   }
   if (id === "bunny") {
-    for (const sx of [-0.16, 0.16]) {
-      const ear = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.5, 4, 8), mat(0xffffff));
-      ear.position.set(sx, 0.78, 0);
-      ear.rotation.z = -sx * 0.35;
-      const inner = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.42, 4, 8), mat(0xffb3c9));
-      inner.position.set(sx, 0.78, 0.05);
-      inner.rotation.z = -sx * 0.35;
-      g.add(ear, inner);
+    for (const sx of [-0.22, 0.22]) {
+      const ear = new THREE.Group();
+      const outer = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.5, 4, 10), mat(0xffffff));
+      const inner = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.42, 4, 8), mat(0xffb3c9));
+      inner.position.z = 0.07;
+      ear.add(outer, inner);
+      ear.position.set(sx, 1.22, -0.05);
+      ear.rotation.z = -sx * 0.6;
+      g.add(ear);
     }
   }
+  if (id === "cap") {
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.64, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+      mat(0x2f6fe0)
+    );
+    dome.scale.y = 0.75;
+    dome.position.y = 0.7;
+    const visor = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.04, 24, 1, false, -Math.PI / 2, Math.PI), mat(0xffc93c));
+    visor.position.set(0, 0.72, 0.42);
+    visor.scale.set(1, 1, 1.1);
+    const button = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), mat(0xffc93c));
+    button.position.y = 1.15;
+    g.add(dome, visor, button);
+  }
   if (id === "scarf") {
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.1, 10, 28), mat(0xe53935));
+    const red = mat(0xe53935);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.1, 10, 28), red);
     ring.rotation.x = Math.PI / 2;
-    ring.position.y = 1.7;
-    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.55, 0.08), mat(0xe53935));
-    tail.position.set(0.12, 1.45, -0.32);
-    tail.rotation.x = 0.2;
-    g.add(ring, tail);
+    ring.position.y = 0.12;
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.55, 0.09), red);
+    tail.position.set(0.16, -0.12, -0.46);
+    tail.rotation.x = 0.25;
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.21, 0.07, 0.1), mat(0xffffff));
+    stripe.position.set(0.16, -0.3, -0.5);
+    stripe.rotation.x = 0.25;
+    g.add(ring, tail, stripe);
   }
   if (id === "backpack") {
-    const bag = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.7, 0.3), mat(0x3d7fe0));
-    bag.position.set(0, 1.35, -0.42);
-    const pocket = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.3, 0.06), mat(0xffd166));
-    pocket.position.set(0, 1.2, -0.6);
-    g.add(bag, pocket);
+    // ランドセル（赤）
+    const red = mat(0xd8263a);
+    const bag = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.68, 0.32), red);
+    bag.position.set(0, -0.06, -0.56);
+    const flap = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.56, 0.05), mat(0xb81d30));
+    flap.position.set(0, 0.02, -0.74);
+    const clasp = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.09, 0.04), mat(0xffd166));
+    clasp.position.set(0, -0.24, -0.77);
+    g.add(bag, flap, clasp);
   }
   return g;
 }
@@ -224,13 +296,15 @@ function buildItem(id) {
 const worn = {};  // slot -> Object3D
 function wear(slot, id) {
   if (worn[slot]) {
-    worn[slot].parent.remove(worn[slot]);
+    worn[slot].parent?.remove(worn[slot]);
     disposeObj(worn[slot]);
     delete worn[slot];
   }
-  if (!id) return;
+  if (!id || !cur) return;
+  const bone = slot === "head" ? cur.head : cur.chest;
+  if (!bone) return;
   const obj = buildItem(id);
-  (slot === "head" ? headG : runner).add(obj);
+  bone.add(obj);
   worn[slot] = obj;
 }
 function applyEquip() {
@@ -238,7 +312,7 @@ function applyEquip() {
 }
 
 /* ============ 状態 ============ */
-let state = "menu";        // menu | play | hit | reward
+let state = "loading";     // loading | menu | play | hit | reward
 let mode = "rand";         // dan | rand | add
 let danNo = 1, danIndex = 1;
 let rndCount = 0, correctCount = 0;
@@ -246,8 +320,15 @@ let pendingReward = false, rewardRow = null;
 let curQ = null;
 let rows = [], activeRow = null, wrongRow = null;
 let laneIdx = 0, runnerX = LANE_X[0];
-let hitT = 0, shake = 0, phase = 0, ampCur = 0;
+let hitT = 0, shake = 0;
 const particles = [];
+
+function animForState() {
+  if (state === "play") return "Running_A";
+  if (state === "hit") return "Hit_A";
+  if (state === "reward") return "Cheer";
+  return "Idle";
+}
 
 /* ============ 出題 ============ */
 function makeQuestion() {
@@ -371,9 +452,12 @@ function decide(row) {
     spawnRow();
   } else {
     wrongRow = row;
+    row.z = HIT_Z - 0.6;            // ぶつかって少し押し戻される
+    row.group.position.z = row.z;
     state = "hit";
-    hitT = 1.0;
+    hitT = HIT_TIME;
     shake = 0.35;
+    playAnim("Hit_A", { once: true, fade: 0.1 });
     toast("おしい！ もういちど", 900);
   }
 }
@@ -381,10 +465,11 @@ function decide(row) {
 /* ============ ご褒美 ============ */
 function showReward() {
   state = "reward";
+  playAnim("Cheer");
   const pool = ITEMS.filter((i) => !owned.has(i.id));
   let icon = "🌟", text;
   if (pool.length === 0) {
-    text = "ぜんぶのこうもくを もってるよ！ すごい！";
+    text = "ぜんぶ そろったよ！ すごい！";
   } else {
     const it = pool[randInt(0, pool.length - 1)];
     owned.add(it.id);
@@ -393,15 +478,18 @@ function showReward() {
     save("sr-equipped", equipped);
     applyEquip();
     icon = it.icon;
-    text = `ごほうび！「${it.name}」をもらったよ！\nきがえで つけてみよう`;
+    text = `ごほうび！「${it.name}」をもらったよ！\nきがえで つけかえられるよ`;
   }
   $("rewardIcon").textContent = icon;
   $("rewardText").textContent = text;
   $("rewardOverlay").classList.remove("hidden");
+  $("ui").classList.add("hidden");
 }
 $("btnRewardOk").onclick = () => {
   $("rewardOverlay").classList.add("hidden");
+  $("ui").classList.remove("hidden");
   state = "play";
+  playAnim("Running_A");
 };
 
 /* ============ エフェクト ============ */
@@ -480,6 +568,7 @@ function showMenu() {
   showOnly("mainMenu");
   $("menu").classList.remove("hidden");
   $("ui").classList.add("hidden");
+  playAnim("Idle");
 }
 function startMode(m, n) {
   mode = m;
@@ -495,6 +584,7 @@ function startMode(m, n) {
   $("ui").classList.remove("hidden");
   state = "play";
   laneIdx = 0;
+  playAnim("Running_A");
   spawnRow();
   applyBgm();
 }
@@ -509,7 +599,7 @@ function renderWardrobe() {
     row.innerHTML = `<span class="icon">${has ? it.icon : "❔"}</span><span class="name">${has ? it.name : "？？？"}</span>`;
     const b = document.createElement("button");
     b.className = "small";
-    b.textContent = !has ? "まだ" : on ? "はずす" : "きる";
+    b.textContent = !has ? "まだ" : on ? "はずす" : "つける";
     b.disabled = !has;
     b.onclick = () => {
       equipped[it.slot] = on ? null : it.id;
@@ -529,6 +619,9 @@ document.querySelectorAll("[data-start]").forEach((b) => {
     if (k === "dan") showOnly("danMenu");
     else startMode(k);
   };
+});
+document.querySelectorAll("[data-char]").forEach((b) => {
+  b.onclick = () => setChar(b.dataset.char);
 });
 const danGrid = $("danGrid");
 for (let n = 1; n <= 9; n++) {
@@ -559,28 +652,25 @@ addEventListener("keydown", (e) => {
 });
 
 /* ============ 更新 ============ */
-let runnerRot = 0;
+let faceAngle = 0;      // 0=正面（カメラ向き） / PI=後ろ姿
+let showcase = 1;       // 1=メニュー用カメラ / 0=プレイ用カメラ
 function update(dt) {
-  const speedNow = state === "play" ? RUN_SPEED : state === "menu" ? MENU_SPEED : 0;
+  const running = state === "play";
+  const speedNow = running ? RUN_SPEED : 0;
+  const showFront = state === "menu" || state === "loading" || state === "reward";
 
-  // 走りアニメ（2つの足・腕の振り）
-  const runSpd = state === "play" ? 12 : state === "menu" ? 4 : 0;
-  phase += dt * runSpd;
-  ampCur = lerp(ampCur, runSpd > 0 ? 1 : 0, Math.min(1, dt * 8));
-  const s = Math.sin(phase);
-  armL.rotation.x = s * 0.9 * ampCur;
-  armR.rotation.x = -s * 0.9 * ampCur;
-  legL.rotation.x = -s * 0.8 * ampCur;
-  legR.rotation.x = s * 0.8 * ampCur;
-  body.position.y = 1.35 + Math.abs(Math.cos(phase)) * 0.06 * ampCur;
+  if (cur) cur.mixer.update(dt);
+
+  // 向き：プレイ中は後ろ姿、メニューとご褒美では正面
+  faceAngle = damp(faceAngle, showFront ? 0 : Math.PI, 8, dt);
+  facing.rotation.y = faceAngle;
 
   // 横移動・傾き
-  runnerX = lerp(runnerX, LANE_X[laneIdx], Math.min(1, dt * 12));
+  if (state === "menu") laneIdx = runnerX < 0 ? 0 : 1;
+  const targetX = showFront && state !== "reward" ? 0 : LANE_X[laneIdx];
+  runnerX = damp(runnerX, targetX, 12, dt);
   runner.position.x = runnerX;
-  const targetRot = state === "hit" ? -0.35 : -0.08 * ampCur;
-  runnerRot = lerp(runnerRot, targetRot, Math.min(1, dt * 8));
-  runner.rotation.x = runnerRot;
-  runner.rotation.z = -(LANE_X[laneIdx] - runnerX) * 0.25;
+  runner.rotation.z = running ? -(LANE_X[laneIdx] - runnerX) * 0.2 : 0;
 
   // 背景
   for (const d of dashes) {
@@ -592,7 +682,7 @@ function update(dt) {
     if (o.position.z > 9) placeDecor(o);
   }
   for (const c of clouds) {
-    c.position.z += speedNow * 0.4 * dt;
+    c.position.z += (speedNow * 0.4 + 0.4) * dt;
     if (c.position.z > 12) placeCloud(c, false);
   }
 
@@ -607,7 +697,7 @@ function update(dt) {
   });
 
   // ゲート到達 → 判定
-  if (state === "play" && activeRow && activeRow.z >= 0) decide(activeRow);
+  if (state === "play" && activeRow && activeRow.z >= HIT_Z) decide(activeRow);
 
   // 不正解で止まった後、同じ問題をもう一度
   if (state === "hit") {
@@ -617,6 +707,7 @@ function update(dt) {
       rows = rows.filter((r) => r !== wrongRow);
       wrongRow = null;
       state = "play";
+      playAnim("Running_A");
       spawnRow();
     }
   }
@@ -628,12 +719,22 @@ function update(dt) {
     showReward();
   }
 
-  // カメラ（後ろから追いかける＋ぶつかった時の揺れ）
+  // カメラ：プレイ中は後ろから追いかける / メニューでは近くからキャラを見せる
+  showcase = damp(showcase, showFront ? 1 : 0, 5, dt);
   shake = Math.max(0, shake - dt);
   const sh = shake * 0.3;
-  camera.position.x = lerp(camera.position.x, runnerX * 0.6, Math.min(1, dt * 5)) + (Math.random() - 0.5) * sh;
-  camera.position.y = 3.2 + ampCur * 0.05 * Math.abs(Math.sin(phase)) + (Math.random() - 0.5) * sh;
-  camera.lookAt(runnerX * 0.4, 1.4, -10);
+  const px = lerp(runnerX * 0.6, runnerX, showcase);
+  camera.position.set(
+    px + (Math.random() - 0.5) * sh,
+    lerp(3.0, 1.9, showcase) + (Math.random() - 0.5) * sh,
+    lerp(6.2, 5.2, showcase)
+  );
+  camera.lookAt(lerp(runnerX * 0.4, runnerX, showcase), lerp(1.4, 1.15, showcase), lerp(-10, 0, showcase));
+  // メニュー中はキャラがパネルに隠れないよう画面をずらす（横長→左に、縦長→上に）
+  const W = innerWidth, H = innerHeight, portrait = H > W;
+  const ox = portrait ? 0 : 0.24 * showcase;
+  const oy = portrait ? 0.24 * showcase : 0;
+  camera.setViewOffset(W, H, ox * W, oy * H, W, H);
 
   updateParticles(dt);
 }
@@ -646,7 +747,30 @@ function tick() {
   requestAnimationFrame(tick);
 }
 
-applyEquip();
-showMenu();
-applyBgm();
+/* ============ 起動 ============ */
 tick();
+try {
+  const [boy, girl] = await Promise.all([loadChar("boy"), loadChar("girl")]);
+  chars.boy = boy;
+  chars.girl = girl;
+  setChar(charKey);
+  $("loading").classList.add("hidden");
+  showMenu();
+  applyBgm();
+} catch (e) {
+  console.error(e);
+  $("loading").textContent = "よみこみに しっぱいしました\nページを ひらきなおしてね";
+}
+
+// 動作確認用（URLに ?debug を付けた時だけ）
+if (location.search.includes("debug")) {
+  window.G = {
+    startMode, setChar, showMenu, showReward,
+    get state() { return state; },
+    get correctLane() { return activeRow ? activeRow.correctLane : null; },
+    equipAll(list) { for (const id of list) { const it = ITEMS.find((i) => i.id === id); owned.add(it.id); equipped[it.slot] = it.id; } applyEquip(); },
+    wardrobe() { showOnly("wardrobe"); renderWardrobe(); },
+    forceHit() { if (activeRow) { laneIdx = 1 - activeRow.correctLane; runnerX = LANE_X[laneIdx]; activeRow.z = HIT_Z; } },
+  };
+  document.title = "ready";
+}

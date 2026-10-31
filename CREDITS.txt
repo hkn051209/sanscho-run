@@ -1,0 +1,14 @@
+さんすうラン 使用素材
+
+■ キャラクター（男の子・女の子）
+  KayKit : Adventurers Character Pack 1.0
+  作者: Kay Lousberg (www.kaylousberg.com)
+  ライセンス: CC0（クレジット表記は任意）
+  ※ 服の色を子ども向けに塗り替えたテクスチャを使用（assets/models/*_texture.png）
+  ※ 元: Mage → boy.glb / Rogue → girl.glb
+
+■ 3D描画
+  three.js r160  ライセンス: MIT（lib/THREE-LICENSE.txt）
+
+■ BGM
+  sunny_day_runabout（Geminiで作成）
