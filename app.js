@@ -11,42 +11,67 @@ const DASH_CYCLE = 180;
 const HIT_Z = -1.1;               // 扉に当たる位置（キャラの少し手前）
 
 /* キャラクター
-   boy : KayKit Adventurers（CC0）。アニメ入り。服の色はテクスチャで塗り替え済み
-   girl: 茜（Akane / CC0）。VRChat式の人型骨格。アニメは男の子のものを読み込み時にリターゲットして使う
-   fit : ご褒美の小物の取り付け位置（slot ごとに 付ける骨・ずらす量・大きさ）。小物は男の子の頭に合わせて作ってあり、それを各キャラに合わせて縮小・移動する */
+   boy : 自作イラストから Tripo で生成し、Mixamo で骨と走りを付けたもの（Mixamo式の骨）
+   girl: 茜（Akane / CC0）。VRChat / SiroinoSotai 式の骨
+   アニメ：KayKit（CC0）のアニメだけを抜き出したファイルを、読み込み時に各キャラの骨へリターゲットして使う。
+           キャラ自身がアニメを持っている場合（男の子の走り）はそちらを優先する
+   fit : ご褒美の小物の取り付け位置（slot ごとに 付ける骨・ずらす量・大きさ）。
+         小物は基準の頭（幅 約1.1・高さ 約1.1）に合わせて作ってあり、それを各キャラに合わせて縮小・移動する
+   noItems: そのキャラでは表示しない小物 */
+const ANIM_SRC = "assets/models/kaykit-anims.glb";
 const CHARS = {
   boy: {
-    type: "kaykit", file: "assets/models/boy.glb", tex: "assets/models/boy_texture.png",
+    file: "assets/models/boy-rigged.glb", rig: "mixamo", height: 2.2,
+    ownAnims: { Running_A: "Armature|mixamo.com|Layer0" },
+    alignRest: true,      // Aポーズで作られているので、手足の向きをTポーズのアニメに合わせて補正する
+    armDown: 10,
+    view: { y: 1.8, z: 4.4, look: 1.3 },
     fit: {
-      head: { bone: "head",  offset: [0, 0, 0], scale: 1 },
-      neck: { bone: "chest", offset: [0, 0, 0], scale: 1 },
-      back: { bone: "chest", offset: [0, 0, 0], scale: 1 },
+      head: { bone: "mixamorigHead",   offset: [0, -0.09, -0.01], scale: 0.63 },
+      neck: { bone: "mixamorigSpine2", offset: [0, 0.14, 0], scale: 0.4 },
+      back: { bone: "mixamorigSpine2", offset: [0, 0.02, 0.09], scale: 0.6 },
     },
+    noItems: [],
   },
   girl: {
-    type: "humanoid", file: "assets/models/akane-girl.glb", height: 2.2,
+    file: "assets/models/akane-girl.glb", rig: "vrc", height: 2.2,
     view: { y: 1.75, z: 3.9, look: 1.3 },   // 細身なのでメニューでは少し寄って映す
-    armDown: 22,          // 男の子のアニメは腕が開き気味なので、細い体に合わせて腕を下げる（度）
+    armDown: 22,          // KayKitのアニメは腕が開き気味なので、細い体に合わせて腕を下げる（度）
     thighFill: null,  // 太もも入りGLBに差し替えたため筒は無効（もちゃおさんが修正）
     fit: {
       head: { bone: "Head",  offset: [0, -0.17, 0.02], scale: 0.45 },
       neck: { bone: "Chest", offset: [0, 0.2, 0.02], scale: 0.3 },
       back: { bone: "Chest", offset: [0, 0.03, 0.04], scale: 0.5 },
     },
+    noItems: [],
   },
 };
 const ANIMS = ["Idle", "Running_A", "Hit_A", "Cheer"];
 const DEFAULT_VIEW = { y: 1.9, z: 5.2, look: 1.15 };   // メニュー・ご褒美画面でキャラを映すカメラ
-// KayKit: 体のパーツだけ表示（武器・帽子・マントは隠す）
-const KEEP_PART = /_(ArmLeft|ArmRight|Body|Head|LegLeft|LegRight)$/;
-// KayKit の骨 → 人型（VRChat / SiroinoSotai 式）の骨
-const RIG_MAP = {
-  hips: "Hips", spine: "Spine", chest: "Chest", head: "Head",
-  upperarml: "UpperArm_L", lowerarml: "LowerArm_L", handl: "Hand_L",
-  upperarmr: "UpperArm_R", lowerarmr: "LowerArm_R", handr: "Hand_R",
-  upperlegl: "UpperLeg_L", lowerlegl: "LowerLeg_L", footl: "Foot_L", toesl: "Toe_L",
-  upperlegr: "UpperLeg_R", lowerlegr: "LowerLeg_R", footr: "Foot_R", toesr: "Toe_R",
+// KayKit の骨 → 各キャラの骨（three.js は名前の「:」を取り除くので mixamorig:Head は mixamorigHead になる）
+const RIGS = {
+  vrc: {
+    hips: "Hips", spine: "Spine", chest: "Chest", head: "Head",
+    upperarml: "UpperArm_L", lowerarml: "LowerArm_L", handl: "Hand_L",
+    upperarmr: "UpperArm_R", lowerarmr: "LowerArm_R", handr: "Hand_R",
+    upperlegl: "UpperLeg_L", lowerlegl: "LowerLeg_L", footl: "Foot_L", toesl: "Toe_L",
+    upperlegr: "UpperLeg_R", lowerlegr: "LowerLeg_R", footr: "Foot_R", toesr: "Toe_R",
+  },
+  mixamo: {
+    hips: "mixamorigHips", spine: "mixamorigSpine", chest: "mixamorigSpine2", head: "mixamorigHead",
+    upperarml: "mixamorigLeftArm", lowerarml: "mixamorigLeftForeArm", handl: "mixamorigLeftHand",
+    upperarmr: "mixamorigRightArm", lowerarmr: "mixamorigRightForeArm", handr: "mixamorigRightHand",
+    upperlegl: "mixamorigLeftUpLeg", lowerlegl: "mixamorigLeftLeg", footl: "mixamorigLeftFoot", toesl: "mixamorigLeftToeBase",
+    upperlegr: "mixamorigRightUpLeg", lowerlegr: "mixamorigRightLeg", footr: "mixamorigRightFoot", toesr: "mixamorigRightToeBase",
+  },
 };
+// 手足の向きをそろえる時に使う「次の骨」（KayKit の名前）
+const CHAIN = {
+  upperarml: "lowerarml", lowerarml: "handl", upperarmr: "lowerarmr", lowerarmr: "handr",
+  upperlegl: "lowerlegl", lowerlegl: "footl", footl: "toesl",
+  upperlegr: "lowerlegr", lowerlegr: "footr", footr: "toesr",
+};
+const ARM_SIDE = { upperarml: -1, lowerarml: -1, handl: -1, upperarmr: 1, lowerarmr: 1, handr: 1 };
 
 /* ご褒美の小物。slot: head=頭の骨 / neck・back=胸の骨 に付く
    増やす時は ITEMS に1行足して、buildItem() に形を足す（またはGLBを読み込む） */
@@ -187,31 +212,40 @@ const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THRE
 const _v1 = new THREE.Vector3();
 
 /* アニメのリターゲット：元の骨の「休みの姿勢からの回転（ワールド）」を、相手の骨の休みの姿勢に掛けて移す。
-   両方とも前向き・Tポーズなので、この単純な方法で合う */
-const ARM_SIDE = { UpperArm_L: -1, LowerArm_L: -1, Hand_L: -1, UpperArm_R: 1, LowerArm_R: 1, Hand_R: 1 };
-function retargetClips(srcRoot, srcClips, tgtRoot, names, { fps = 30, armDown = 0 } = {}) {
+   どちらも前向き。相手がAポーズの時は alignRest で手足の向きを元に合わせてから移す */
+function retargetClips(srcRoot, srcClips, tgtRoot, names, rig, { fps = 30, armDown = 0, alignRest = false } = {}) {
   srcRoot.updateMatrixWorld(true);
   tgtRoot.updateMatrixWorld(true);
-  const inv = Object.fromEntries(Object.entries(RIG_MAP).map(([s, d]) => [d, s]));
-  const pairs = [];
-  tgtRoot.traverse((o) => {
-    const s = inv[o.name] && srcRoot.getObjectByName(inv[o.name]);
-    if (s) pairs.push({
-      s, t: o,
-      sRest: s.getWorldQuaternion(new THREE.Quaternion()),
-      tRest: o.getWorldQuaternion(new THREE.Quaternion()),
-      tLocal: o.quaternion.clone(),
-    });
-  });
-  const sHips = srcRoot.getObjectByName("hips"), tHips = tgtRoot.getObjectByName("Hips");
-  const tChest = tgtRoot.getObjectByName("Chest");
-  const armQ = { "-1": new THREE.Quaternion(), "1": new THREE.Quaternion() };
+  const pos = (o) => o.getWorldPosition(new THREE.Vector3());
+  const bySrc = {};
+  for (const [sName, tName] of Object.entries(rig)) {
+    const s = srcRoot.getObjectByName(sName), t2 = tgtRoot.getObjectByName(tName);
+    if (s && t2) bySrc[sName] = { sName, s, t: t2 };
+  }
+  for (const p of Object.values(bySrc)) {
+    p.sRest = p.s.getWorldQuaternion(new THREE.Quaternion());
+    p.tRest = p.t.getWorldQuaternion(new THREE.Quaternion());
+    p.tLocal = p.t.quaternion.clone();
+    const c = alignRest && bySrc[CHAIN[p.sName]];
+    if (c) {
+      const sDir = pos(c.s).sub(pos(p.s)).normalize();
+      const tDir = pos(c.t).sub(pos(p.t)).normalize();
+      p.tRest.premultiply(new THREE.Quaternion().setFromUnitVectors(tDir, sDir));
+    }
+  }
+  // 親から順に計算する
+  const order = new Map();
+  let k = 0;
+  tgtRoot.traverse((o) => order.set(o, k++));
+  const pairs = Object.values(bySrc).sort((a, b) => order.get(a.t) - order.get(b.t));
+
+  const sHips = bySrc.hips.s, tHips = bySrc.hips.t;
+  const tChest = bySrc.chest ? bySrc.chest.t : tHips;
   const _z = new THREE.Vector3(0, 0, 1);
   const _q4 = new THREE.Quaternion();
-  const sHipRest = sHips.getWorldPosition(new THREE.Vector3());
-  const tHipRest = tHips.getWorldPosition(new THREE.Vector3());
+  const sHipRest = pos(sHips), tHipRest = pos(tHips);
   const tHipLocal = tHips.position.clone();
-  const ratio = tHipRest.y / sHipRest.y;
+  const ratio = (tHipRest.y - tgtRoot.position.y) / sHipRest.y;
   const srcRest = new Map();
   srcRoot.traverse((o) => srcRest.set(o, [o.position.clone(), o.quaternion.clone(), o.scale.clone()]));
 
@@ -237,9 +271,9 @@ function retargetClips(srcRoot, srcClips, tgtRoot, names, { fps = 30, armDown = 
       tHips.position.copy(hp);
       hp.toArray(pv, i * 3);
       tHips.updateMatrixWorld(true);
-      pairs.forEach((p, k) => {
+      pairs.forEach((p, j) => {
         const want = _q2.copy(p.s.getWorldQuaternion(_q1)).multiply(_q3.copy(p.sRest).invert()).multiply(p.tRest);
-        const side = ARM_SIDE[p.t.name];
+        const side = ARM_SIDE[p.sName];
         if (side && armDown) {
           // 胸の向きを基準に、腕全体を下へ回す
           const c = tChest.getWorldQuaternion(_q4);
@@ -248,19 +282,19 @@ function retargetClips(srcRoot, srcClips, tgtRoot, names, { fps = 30, armDown = 
         }
         const local = p.t.parent.getWorldQuaternion(_q3).invert().multiply(want);
         if (i > 0) {   // 符号の反転で補間が飛ばないように
-          const o = (i - 1) * 4, a = qv[k];
+          const o = (i - 1) * 4, a = qv[j];
           if (a[o] * local.x + a[o + 1] * local.y + a[o + 2] * local.z + a[o + 3] * local.w < 0) {
             local.set(-local.x, -local.y, -local.z, -local.w);
           }
         }
         p.t.quaternion.copy(local);
         p.t.updateMatrixWorld(true);
-        local.toArray(qv[k], i * 4);
+        local.toArray(qv[j], i * 4);
       });
     }
     act.stop();
     mixer.uncacheAction(clip);
-    const tracks = pairs.map((p, k) => new THREE.QuaternionKeyframeTrack(`${p.t.name}.quaternion`, times, qv[k]));
+    const tracks = pairs.map((p, j) => new THREE.QuaternionKeyframeTrack(`${p.t.name}.quaternion`, times, qv[j]));
     tracks.push(new THREE.VectorKeyframeTrack(`${tHips.name}.position`, times, pv));
     out[name] = new THREE.AnimationClip(name, clip.duration, tracks);
   }
@@ -282,12 +316,13 @@ function makeAnchors(root, S, fit) {
     const bone = root.getObjectByName(f.bone);
     if (!bone) continue;
     const bq = bone.getWorldQuaternion(new THREE.Quaternion());
+    const bs = bone.getWorldScale(new THREE.Vector3()).x;   // Mixamo は骨が 0.01 倍などになっていることがある
     const iq = bq.clone().invert();
     const a = new THREE.Group();
     a.name = `anchor_${slot}`;
     a.quaternion.copy(iq);
-    a.position.set(...f.offset).divideScalar(S).applyQuaternion(iq);
-    a.scale.setScalar(f.scale / S);
+    a.position.set(...f.offset).divideScalar(S * bs).applyQuaternion(iq);
+    a.scale.setScalar(f.scale / (S * bs));
     bone.add(a);
     anchors[slot] = a;
   }
@@ -307,61 +342,29 @@ function collectParts(root) {
   return parts;
 }
 
-function finishChar(def, root, clips, S) {
-  const wrapper = new THREE.Group();
-  wrapper.scale.setScalar(S);
-  root.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root);
-  wrapper.position.y = -box.min.y * S;     // 足を地面に
-  const anchors = makeAnchors(root, S, def.fit);
-  wrapper.add(root);
-  const mixer = new THREE.AnimationMixer(root);
-  const actions = {};
-  for (const name of ANIMS) if (clips[name]) actions[name] = mixer.clipAction(clips[name]);
-  const parts = collectParts(root);
-  return {
-    def, wrapper, scene: root, mixer, actions, anchors, parts, current: null, currentName: null,
-    setPart(name, visible) { for (const m of parts[name] || []) m.visible = visible; },
-  };
-}
+// アニメ調の塗り（トゥーン）
+const toonGrad = new THREE.DataTexture(new Uint8Array([190, 190, 190, 255, 240, 240, 240, 255, 255, 255, 255, 255]), 3, 1);
+toonGrad.minFilter = toonGrad.magFilter = THREE.NearestFilter;
+toonGrad.needsUpdate = true;
 
-async function loadKayKit(def, gltf) {
-  const tex = await new THREE.TextureLoader().loadAsync(def.tex);
-  tex.flipY = false;
-  tex.colorSpace = THREE.SRGBColorSpace;
+function loadCharacter(def, gltf, animSrc) {
   const root = gltf.scene;
-  root.traverse((o) => {
-    if (!o.isMesh) return;
-    o.visible = KEEP_PART.test(o.name);
-    if (o.visible) {
-      o.material = o.material.clone();
-      o.material.map = tex;
-    }
-  });
-  const clips = {};
-  for (const name of ANIMS) clips[name] = gltf.animations.find((a) => a.name === name);
-  return finishChar(def, root, clips, 1);
-}
-
-function loadHumanoid(def, gltf, animSrc) {
-  const root = gltf.scene;
-  // アニメ調の塗り（トゥーン）に変える。頂点カラーはVRChat用シェーダー向けのマスクなので使わない
-  const grad = new THREE.DataTexture(new Uint8Array([190, 190, 190, 255, 240, 240, 240, 255, 255, 255, 255, 255]), 3, 1);
-  grad.minFilter = grad.magFilter = THREE.NearestFilter;
-  grad.needsUpdate = true;
-  const toonCache = new Map();
+  // トゥーンに変える。頂点カラーはVRChat用シェーダー向けのマスクなどのことがあるので使わない
+  const cache = new Map();
   const toToon = (m) => {
-    if (!toonCache.has(m)) {
-      toonCache.set(m, new THREE.MeshToonMaterial({ name: m.name, map: m.map, color: m.color, gradientMap: grad, side: m.side }));
+    if (!cache.has(m)) {
+      cache.set(m, new THREE.MeshToonMaterial({
+        name: m.name, map: m.map, normalMap: m.normalMap, color: m.color, gradientMap: toonGrad, side: m.side,
+      }));
     }
-    return toonCache.get(m);
+    return cache.get(m);
   };
   root.traverse((o) => {
     if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(toToon) : toToon(o.material);
   });
   // 太ももの補い（骨に固定した筒）
   if (def.thighFill != null) {
-    const m = new THREE.MeshToonMaterial({ color: def.thighFill, gradientMap: grad });
+    const m = new THREE.MeshToonMaterial({ color: def.thighFill, gradientMap: toonGrad });
     for (const side of ["L", "R"]) {
       const up = root.getObjectByName(`UpperLeg_${side}`), low = root.getObjectByName(`LowerLeg_${side}`);
       if (!up || !low) continue;
@@ -378,16 +381,40 @@ function loadHumanoid(def, gltf, animSrc) {
   root.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(root);
   const S = def.height / (box.max.y - box.min.y);
-  const clips = retargetClips(animSrc.scene, animSrc.animations, root, ANIMS, { armDown: def.armDown || 0 });
-  return finishChar(def, root, clips, S);
+
+  // アニメ：キャラ自身のもの → 足りない分を KayKit からリターゲット
+  const clips = {};
+  for (const [name, srcName] of Object.entries(def.ownAnims || {})) {
+    const c = gltf.animations.find((a) => a.name === srcName);
+    if (c) { clips[name] = c.clone(); clips[name].name = name; }
+  }
+  const need = ANIMS.filter((n) => !clips[n]);
+  Object.assign(clips, retargetClips(animSrc.scene, animSrc.animations, root, need, RIGS[def.rig], {
+    armDown: def.armDown || 0, alignRest: !!def.alignRest,
+  }));
+
+  const wrapper = new THREE.Group();
+  wrapper.scale.setScalar(S);
+  wrapper.position.y = -box.min.y * S;     // 足を地面に
+  const anchors = makeAnchors(root, S, def.fit);
+  wrapper.add(root);
+  const mixer = new THREE.AnimationMixer(root);
+  const actions = {};
+  for (const name of ANIMS) if (clips[name]) actions[name] = mixer.clipAction(clips[name]);
+  const parts = collectParts(root);
+  return {
+    def, wrapper, scene: root, mixer, actions, anchors, parts, current: null, currentName: null,
+    setPart(name, visible) { for (const m of parts[name] || []) m.visible = visible; },
+  };
 }
 
 async function loadAllChars() {
   const loader = new GLTFLoader();
-  const [boyG, girlG] = await Promise.all([loader.loadAsync(CHARS.boy.file), loader.loadAsync(CHARS.girl.file)]);
-  // リターゲットは男の子のモデルが休みの姿勢のうちに行う
-  chars.girl = loadHumanoid(CHARS.girl, girlG, boyG);
-  chars.boy = await loadKayKit(CHARS.boy, boyG);
+  const [animSrc, boyG, girlG] = await Promise.all([
+    loader.loadAsync(ANIM_SRC), loader.loadAsync(CHARS.boy.file), loader.loadAsync(CHARS.girl.file),
+  ]);
+  chars.boy = loadCharacter(CHARS.boy, boyG, animSrc);
+  chars.girl = loadCharacter(CHARS.girl, girlG, animSrc);
 }
 
 function playAnim(name, { once = false, fade = 0.2 } = {}) {
@@ -508,7 +535,7 @@ function wear(slot, id) {
   }
   if (!id || !cur) return;
   const anchor = cur.anchors[slot];
-  if (!anchor) return;
+  if (!anchor || (cur.def.noItems || []).includes(id)) return;
   const obj = buildItem(id);
   anchor.add(obj);
   worn[slot] = obj;

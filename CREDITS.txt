@@ -1,11 +1,14 @@
 さんすうラン 使用素材
 
 ■ 男の子キャラクター
-  KayKit : Adventurers Character Pack 1.0（Mage）
+  Boy character model generated with Tripo, rigged and animated with Mixamo.
+  （assets/models/boy-rigged.glb）
+
+■ アニメーション（待機・ぶつかる・喜ぶ。女の子は走りも）
+  KayKit : Adventurers Character Pack 1.0 のアニメーションのみを抜き出して使用（assets/models/kaykit-anims.glb）
   作者: Kay Lousberg (www.kaylousberg.com)
   ライセンス: CC0（クレジット表記は任意）
-  ※ 服の色を子ども向けに塗り替えたテクスチャを使用（assets/models/boy_texture.png）
-  ※ 走る・喜ぶなどのアニメーションもこのパックのもの。女の子にはリターゲットして使用
+  ※ 読み込み時に各キャラの骨へリターゲットして使用
 
 ■ 女の子キャラクター
   Girl character: "Akane" by 山野重工赤山派閥独立支部 (CC0 1.0)
