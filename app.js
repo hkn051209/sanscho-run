@@ -10,42 +10,34 @@ const HIT_TIME = 1.0;              // 不正解で止まる秒数
 const DASH_CYCLE = 180;
 const HIT_Z = -1.1;               // 扉に当たる位置（キャラの少し手前）
 
-/* キャラクター
-   boy : 自作イラストから Tripo で生成し、Mixamo で骨と走りを付けたもの（Mixamo式の骨）
-   girl: 茜（Akane / CC0）。VRChat / SiroinoSotai 式の骨
-   アニメ：KayKit（CC0）のアニメだけを抜き出したファイルを、読み込み時に各キャラの骨へリターゲットして使う。
-           キャラ自身がアニメを持っている場合（男の子の走り）はそちらを優先する
+/* キャラクター：茜（Akane / CC0）。VRChat / SiroinoSotai 式の骨
+   アニメ：KayKit（CC0）のアニメだけを抜き出したファイルを、読み込み時に骨へリターゲットして使う
    fit : ご褒美の小物の取り付け位置（slot ごとに 付ける骨・ずらす量・大きさ）。
-         小物は基準の頭（幅 約1.1・高さ 約1.1）に合わせて作ってあり、それを各キャラに合わせて縮小・移動する
-   noItems: そのキャラでは表示しない小物 */
+         小物は基準の頭（幅 約1.1・高さ 約1.1）に合わせて作ってあり、それをキャラに合わせて縮小・移動する
+   outfits: 衣装ごとに表示する部品・隠す部品。ここに無い部品（髪・靴など）はそのまま
+   tintParts: 「ふくのいろ」で色を掛ける部品（白い部分がその色に染まり、黒や赤の部分はほぼそのまま） */
 const ANIM_SRC = "assets/models/kaykit-anims.glb";
 const CHARS = {
-  boy: {
-    file: "assets/models/boy-rigged.glb", rig: "mixamo", height: 2.2,
-    ownAnims: { Running_A: "Armature|mixamo.com|Layer0" },
-    alignRest: true,      // Aポーズで作られているので、手足の向きをTポーズのアニメに合わせて補正する
-    armDown: 10,
-    view: { y: 1.8, z: 4.4, look: 1.3 },
-    fit: {
-      head: { bone: "mixamorigHead",   offset: [0, -0.09, -0.01], scale: 0.63 },
-      neck: { bone: "mixamorigSpine2", offset: [0, 0.14, 0], scale: 0.4 },
-      back: { bone: "mixamorigSpine2", offset: [0, 0.02, 0.09], scale: 0.6 },
-    },
-    noItems: [],
-  },
   girl: {
     file: "assets/models/akane-girl.glb", rig: "vrc", height: 2.2,
     view: { y: 1.75, z: 3.9, look: 1.3 },   // 細身なのでメニューでは少し寄って映す
     armDown: 22,          // KayKitのアニメは腕が開き気味なので、細い体に合わせて腕を下げる（度）
-    thighFill: null,  // 太もも入りGLBに差し替えたため筒は無効（もちゃおさんが修正）
+    thighFill: null,      // 太ももの部品が無い時に、タイツ色の筒で補う（色を入れると有効）
     fit: {
       head: { bone: "Head",  offset: [0, -0.17, 0.02], scale: 0.45 },
       neck: { bone: "Chest", offset: [0, 0.2, 0.02], scale: 0.3 },
       back: { bone: "Chest", offset: [0, 0.03, 0.04], scale: 0.5 },
     },
+    outfits: {
+      normal: { show: ["C_jacket", "C_armcover", "C_inner", "C_underwear", "C_seal"], hide: ["C_dress1"] },
+      // 下着とシールはワンピースから透けて出てしまうので、ワンピースの時は隠す
+      dress:  { show: ["C_dress1"], hide: ["C_jacket", "C_armcover", "C_inner", "C_underwear", "C_seal"] },
+    },
+    tintParts: ["C_jacket"],
     noItems: [],
   },
 };
+const DEFAULT_CHAR = "girl";
 const ANIMS = ["Idle", "Running_A", "Hit_A", "Cheer"];
 const DEFAULT_VIEW = { y: 1.9, z: 5.2, look: 1.15 };   // メニュー・ご褒美画面でキャラを映すカメラ
 // KayKit の骨 → 各キャラの骨（three.js は名前の「:」を取り除くので mixamorig:Head は mixamorigHead になる）
@@ -73,24 +65,33 @@ const CHAIN = {
 };
 const ARM_SIDE = { upperarml: -1, lowerarml: -1, handl: -1, upperarmr: 1, lowerarmr: 1, handr: 1 };
 
-/* ご褒美の小物。slot: head=頭の骨 / neck・back=胸の骨 に付く
-   増やす時は ITEMS に1行足して、buildItem() に形を足す（またはGLBを読み込む） */
+/* ご褒美。kind: acc=小物 / outfit=衣装 / color=ふくのいろ
+   小物の slot: head=頭の骨 / neck・back=胸の骨 に付く
+   増やす時は ITEMS に1行足す（小物は buildItem() に形も足す。衣装は CHARS の outfits に部品の表示・非表示を足す） */
 const ITEMS = [
-  { id: "ribbon",   name: "リボン",     icon: "🎀", slot: "head" },
-  { id: "hat",      name: "麦わら帽子", icon: "👒", slot: "head" },
-  { id: "bunny",    name: "うさぎ耳",   icon: "🐰", slot: "head" },
-  { id: "cap",      name: "キャップ",   icon: "🧢", slot: "head" },
-  { id: "scarf",    name: "マフラー",   icon: "🧣", slot: "neck" },
-  { id: "backpack", name: "ランドセル", icon: "🎒", slot: "back" },
+  { id: "ribbon",   kind: "acc", name: "リボン",     icon: "🎀", slot: "head" },
+  { id: "hat",      kind: "acc", name: "麦わら帽子", icon: "👒", slot: "head" },
+  { id: "bunny",    kind: "acc", name: "うさぎ耳",   icon: "🐰", slot: "head" },
+  { id: "cap",      kind: "acc", name: "キャップ",   icon: "🧢", slot: "head" },
+  { id: "scarf",    kind: "acc", name: "マフラー",   icon: "🧣", slot: "neck" },
+  { id: "backpack", kind: "acc", name: "ランドセル", icon: "🎒", slot: "back" },
+  { id: "dress",    kind: "outfit", name: "ワンピース", icon: "👗", slot: "outfit" },
+  { id: "col_pink",     kind: "color", name: "ピンク",     color: "#ffb3cf", slot: "color" },
+  { id: "col_sky",      kind: "color", name: "みずいろ",   color: "#a9dcff", slot: "color" },
+  { id: "col_yellow",   kind: "color", name: "きいろ",     color: "#ffe47a", slot: "color" },
+  { id: "col_lavender", kind: "color", name: "ラベンダー", color: "#cdb8ff", slot: "color" },
+  { id: "col_mint",     kind: "color", name: "ミント",     color: "#a6efcf", slot: "color" },
 ];
+const ACC_SLOTS = ["head", "neck", "back"];
 
 /* ============ 保存 ============ */
 const load = (k, fb) => { try { return JSON.parse(localStorage.getItem(k)) ?? fb; } catch { return fb; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 const owned = new Set(load("sr-owned", []));
 const equipped = load("sr-equipped", {});   // slot -> item id
-let charKey = load("sr-char", "boy");
-if (!CHARS[charKey]) charKey = "boy";
+// 以前のセーブに男の子の選択が残っていても、女の子で始める
+let charKey = load("sr-char", DEFAULT_CHAR);
+if (!CHARS[charKey]) charKey = DEFAULT_CHAR;
 
 /* ============ 共通 ============ */
 const $ = (id) => document.getElementById(id);
@@ -402,19 +403,27 @@ function loadCharacter(def, gltf, animSrc) {
   const actions = {};
   for (const name of ANIMS) if (clips[name]) actions[name] = mixer.clipAction(clips[name]);
   const parts = collectParts(root);
+  // 色を掛ける部品は、ほかの部品と共有しているマテリアルを複製して単独で染められるようにする
+  const tint = [];
+  for (const name of def.tintParts || []) {
+    for (const m of parts[name] || []) {
+      m.material = m.material.clone();
+      tint.push(m.material);
+    }
+  }
   return {
-    def, wrapper, scene: root, mixer, actions, anchors, parts, current: null, currentName: null,
+    def, wrapper, scene: root, mixer, actions, anchors, parts, tint, current: null, currentName: null,
     setPart(name, visible) { for (const m of parts[name] || []) m.visible = visible; },
   };
 }
 
 async function loadAllChars() {
   const loader = new GLTFLoader();
-  const [animSrc, boyG, girlG] = await Promise.all([
-    loader.loadAsync(ANIM_SRC), loader.loadAsync(CHARS.boy.file), loader.loadAsync(CHARS.girl.file),
+  const keys = Object.keys(CHARS);
+  const [animSrc, ...models] = await Promise.all([
+    loader.loadAsync(ANIM_SRC), ...keys.map((k) => loader.loadAsync(CHARS[k].file)),
   ]);
-  chars.boy = loadCharacter(CHARS.boy, boyG, animSrc);
-  chars.girl = loadCharacter(CHARS.girl, girlG, animSrc);
+  keys.forEach((k, i) => { chars[k] = loadCharacter(CHARS[k], models[i], animSrc); });
 }
 
 function playAnim(name, { once = false, fade = 0.2 } = {}) {
@@ -443,7 +452,6 @@ function setChar(key) {
   cur.currentName = null;
   playAnim(animForState(), { fade: 0 });
   applyEquip();
-  document.querySelectorAll("[data-char]").forEach((b) => b.classList.toggle("on", b.dataset.char === key));
 }
 
 /* ---------- 小物（着せ替え） ----------
@@ -541,7 +549,18 @@ function wear(slot, id) {
   worn[slot] = obj;
 }
 function applyEquip() {
-  for (const s of ["head", "neck", "back"]) wear(s, equipped[s] ?? null);
+  for (const s of ACC_SLOTS) wear(s, equipped[s] ?? null);
+  if (!cur) return;
+  // 衣装
+  const outfits = cur.def.outfits || {};
+  const o = outfits[equipped.outfit] || outfits.normal;
+  if (o) {
+    for (const n of o.hide) cur.setPart(n, false);
+    for (const n of o.show) cur.setPart(n, true);
+  }
+  // ふくのいろ
+  const col = ITEMS.find((i) => i.id === equipped.color);
+  for (const m of cur.tint) m.color.set(col ? col.color : "#ffffff");
 }
 
 /* ============ 状態 ============ */
@@ -696,6 +715,14 @@ function decide(row) {
 }
 
 /* ============ ご褒美 ============ */
+function rewardLabel(it) {
+  if (it.kind === "color") return `ふくの いろ「${it.name}」`;
+  return `「${it.name}」`;
+}
+function itemIcon(it) {
+  if (it.kind === "color") return `<span class="swatch" style="background:${it.color}"></span>`;
+  return it.icon;
+}
 function showReward() {
   state = "reward";
   playAnim("Cheer");
@@ -710,10 +737,10 @@ function showReward() {
     equipped[it.slot] = it.id;
     save("sr-equipped", equipped);
     applyEquip();
-    icon = it.icon;
-    text = `ごほうび！「${it.name}」をもらったよ！\nきがえで つけかえられるよ`;
+    icon = itemIcon(it);
+    text = `ごほうび！${rewardLabel(it)}をもらったよ！\nきがえで つけかえられるよ`;
   }
-  $("rewardIcon").textContent = icon;
+  $("rewardIcon").innerHTML = icon;
   $("rewardText").textContent = text;
   $("rewardOverlay").classList.remove("hidden");
   $("ui").classList.add("hidden");
@@ -824,24 +851,55 @@ function startMode(m, n) {
 function renderWardrobe() {
   const list = $("wardrobeList");
   list.innerHTML = "";
-  for (const it of ITEMS) {
-    const has = owned.has(it.id);
-    const on = equipped[it.slot] === it.id;
-    const row = document.createElement("div");
-    row.className = "item";
-    row.innerHTML = `<span class="icon">${has ? it.icon : "❔"}</span><span class="name">${has ? it.name : "？？？"}</span>`;
+  const setEq = (slot, id) => {
+    equipped[slot] = id;
+    save("sr-equipped", equipped);
+    applyEquip();
+    playAnim("Cheer");
+    renderWardrobe();
+  };
+  const row = (iconHtml, name, label, disabled, onClick, on) => {
+    const r = document.createElement("div");
+    r.className = "item" + (on ? " on" : "");
+    r.innerHTML = `<span class="icon">${iconHtml}</span><span class="name">${name}</span>`;
     const b = document.createElement("button");
     b.className = "small";
-    b.textContent = !has ? "まだ" : on ? "はずす" : "つける";
-    b.disabled = !has;
-    b.onclick = () => {
-      equipped[it.slot] = on ? null : it.id;
-      save("sr-equipped", equipped);
-      applyEquip();
-      renderWardrobe();
-    };
-    row.append(b);
-    list.append(row);
+    b.textContent = label;
+    b.disabled = disabled;
+    b.onclick = onClick;
+    r.append(b);
+    list.append(r);
+  };
+  const head = (txt) => {
+    const h = document.createElement("h3");
+    h.textContent = txt;
+    list.append(h);
+  };
+  const unknown = (it) => row("❔", "？？？", "まだ", true, null, false);
+
+  head("ふく");
+  const dressOn = equipped.outfit === "dress";
+  row("👕", "いつもの ふく", dressOn ? "きる" : "きてる", !dressOn, () => setEq("outfit", null), !dressOn);
+  for (const it of ITEMS.filter((i) => i.kind === "outfit")) {
+    if (!owned.has(it.id)) { unknown(it); continue; }
+    const on = equipped.outfit === it.id;
+    row(it.icon, it.name, on ? "きてる" : "きる", on, () => setEq("outfit", it.id), on);
+  }
+
+  head("ふくの いろ（いつもの ふく）");
+  const noCol = !equipped.color;
+  row(`<span class="swatch" style="background:#ffffff"></span>`, "もとの しろ", noCol ? "えらんでる" : "えらぶ", noCol, () => setEq("color", null), noCol);
+  for (const it of ITEMS.filter((i) => i.kind === "color")) {
+    if (!owned.has(it.id)) { unknown(it); continue; }
+    const on = equipped.color === it.id;
+    row(itemIcon(it), it.name, on ? "えらんでる" : "えらぶ", on, () => setEq("color", it.id), on);
+  }
+
+  head("こもの");
+  for (const it of ITEMS.filter((i) => i.kind === "acc")) {
+    if (!owned.has(it.id)) { unknown(it); continue; }
+    const on = equipped[it.slot] === it.id;
+    row(it.icon, it.name, on ? "はずす" : "つける", false, () => setEq(it.slot, on ? null : it.id), on);
   }
 }
 
@@ -852,9 +910,6 @@ document.querySelectorAll("[data-start]").forEach((b) => {
     if (k === "dan") showOnly("danMenu");
     else startMode(k);
   };
-});
-document.querySelectorAll("[data-char]").forEach((b) => {
-  b.onclick = () => setChar(b.dataset.char);
 });
 const danGrid = $("danGrid");
 for (let n = 1; n <= 9; n++) {
